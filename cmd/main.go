@@ -26,6 +26,8 @@ var dovecotDirectorLabels string
 var namespace string
 var kubeconf *rest.Config
 
+var initialDovecotPodCount int
+
 func main() {
 	clientset, err := InClusterAuth()
 
@@ -38,6 +40,9 @@ func main() {
 	dovecotDirectorLabels = os.Getenv("DOVECOT_DIRECTOR_LABELS")
 	dovecotLabels = os.Getenv("DOVECOT_LABELS")
 	namespace = os.Getenv("DOVECOT_NAMESPACE")
+
+	dovecotPods := GetPodsByLabel(clientset, namespace, dovecotLabels)
+	initialDovecotPodCount = len(dovecotPods.Items)
 
 	StartWatcher(clientset, namespace)
 }
@@ -95,6 +100,11 @@ func ExecuteCommand(command string, podname string, namespace string, clientset 
 }
 
 func handleEvent(pod *v1.Pod, clientset *kubernetes.Clientset) {
+	if initialDovecotPodCount > 1 {
+		initialDovecotPodCount--
+		return
+	}
+
 	switch pod.Status.Phase {
 	case v1.PodFailed, v1.PodSucceeded:
 	case v1.PodRunning:
