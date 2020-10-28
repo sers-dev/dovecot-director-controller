@@ -1,0 +1,13 @@
+version: '3.3'
+services:
+  dovecot-director-controller:
+    image: angylada/dovecot-director-controller:latest
+    build:
+      context: ../
+      dockerfile: ./docker/Dockerfile
+    volumes:
+      - ~/.kube/.config:/root/.kube/config
+    environment:
+      - DOVECOT_DIRECTOR_LABELS=app.kubernetes.io/instance=test,app.kubernetes.io/name=dovecot-director
+      - DOVECOT_LABELS=app.kubernetes.io/instance=test,app.kubernetes.io/name=dovecot
+      - DOVECOT_NAMESPACE=mail
