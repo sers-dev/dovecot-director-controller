@@ -105,15 +105,25 @@ func handleEvent(pod *v1.Pod, clientset *kubernetes.Clientset) {
 			if containerStatus.Ready {
 				podlist := GetPodsByLabel(clientset, namespace, dovecotDirectorLabels)
 
-				for _, dovecotPod := range podlist.Items {
+				for _, dovecotDirectorPod := range podlist.Items {
+                    time := time.Now()
+                    logLevel := "info"
+                    logMessage := "success"
+                    formattedTime := time.Format("2006-01-02 15:04:05 MST")
+
 					err := ExecuteCommand(
 						"doveadm reload",
-						dovecotPod.ObjectMeta.Name,
+						dovecotDirectorPod.ObjectMeta.Name,
 						namespace,
 						clientset)
+
 					if err != nil {
-						fmt.Println(err.Error())
+					    logLevel = "error"
+					    logMessage = err.Error()
 					}
+
+					log := fmt.Sprintf("{ \"level\": \"%s\", \"timestamp\": \"%s\", \"pod\": \"%s\", \"command\": \"doveadm reload\", \"message\": \"%s\" }", logLevel, formattedTime, dovecotDirectorPod.ObjectMeta.Name, logMessage)
+					fmt.Println(log)
 				}
 			}
 		}
