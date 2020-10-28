@@ -22,6 +22,8 @@ import (
 // variables: namespace, labels
 var dovecotLabels string
 var dovecotDirectorLabels string
+var dovecotDirectorContainerName string
+
 
 var namespace string
 var kubeconf *rest.Config
@@ -38,6 +40,8 @@ func main() {
 		panic(err.Error())
 	}
 	dovecotDirectorLabels = os.Getenv("DOVECOT_DIRECTOR_LABELS")
+	dovecotDirectorContainerName = os.Getenv("DOVECOT_DIRECTOR_CONTAINER_NAME")
+
 	dovecotLabels = os.Getenv("DOVECOT_LABELS")
 	namespace = os.Getenv("DOVECOT_NAMESPACE")
 
@@ -68,6 +72,7 @@ func ExecuteCommand(command string, podname string, namespace string, clientset 
 	req := clientset.CoreV1().RESTClient().Post().Resource("pods").Name(podname).Namespace(namespace).SubResource("exec")
 	// THE FOLLOWING EXPECTS THE POD TO HAVE ONLY ONE CONTAINER IN WHICH THE COMMAND IS GOING TO BE EXECUTED
 	option := &v1.PodExecOptions{
+		Container: dovecotDirectorContainerName,
 		Command: cmd,
 		Stdin:   false,
 		Stdout:  true,

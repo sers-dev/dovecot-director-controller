@@ -13,9 +13,10 @@ If you don't run it inside a k8s cluster it tries to load the kubeconfig in the 
 If it does not exist you need to specify the absolute path with command flag "-c".
  
 Environment variables needed for successful execution:
-* `DOVECOT_DIRECTOR_LABELS`(string): All labels given to dovecot director for conclusive identification of dovecot director pods in the following format: `<LABEL1>=<VALUE1>,<LABEL2>=<VALUE2>`
-* `DOVECOT_LABELS`(string): All labels given to dovecot for conclusive identification of dovecot pods, same format as in `DOVECOT_DIRECTOR_LABELS`
 * `DOVECOT_NAMESPACE`(string): Namespace name which must contain both dovecot director and dovecot pods
+* `DOVECOT_LABELS`(string): All labels given to dovecot for conclusive identification of dovecot pods, same format as in `DOVECOT_DIRECTOR_LABELS`
+* `DOVECOT_DIRECTOR_LABELS`(string): All labels given to dovecot director for conclusive identification of dovecot director pods in the following format: `<LABEL1>=<VALUE1>,<LABEL2>=<VALUE2>`
+* `DOVECOT_DIRECTOR_CONTAINER_NAME` (string) (optional): Container Name of dovecot-director in Pod. Defaults to first Container in Pod if not set.
 
 ### Used Library
 https://github.com/kubernetes/client-go
