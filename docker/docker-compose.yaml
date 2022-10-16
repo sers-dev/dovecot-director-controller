@@ -1,7 +1,7 @@
 version: '3.3'
 services:
   dovecot-director-controller:
-    image: angylada/dovecot-director-controller:latest
+    image: "ghcr.io/sers-dev/dovecot-director-controller:latest"
     build:
       context: ../
       dockerfile: ./docker/Dockerfile
