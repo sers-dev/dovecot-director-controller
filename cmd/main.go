@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/util/homedir"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -23,7 +24,7 @@ import (
 var dovecotLabels string
 var dovecotDirectorLabels string
 var dovecotDirectorContainerName string
-
+var syncFrequencyDuration int
 
 var namespace string
 var kubeconf *rest.Config
@@ -42,13 +43,23 @@ func main() {
 	dovecotDirectorLabels = os.Getenv("DOVECOT_DIRECTOR_LABELS")
 	dovecotDirectorContainerName = os.Getenv("DOVECOT_DIRECTOR_CONTAINER_NAME")
 
+	syncFrequencyDurationEnv := os.Getenv("SYNC_FREQUENCY_DURATION")
+	syncFrequencyDuration = 70
+	if syncFrequencyDurationEnv != "" {
+		syncFrequencyDuration, err = strconv.Atoi(syncFrequencyDurationEnv)
+		if err != nil {
+			syncFrequencyDuration = 70
+		}
+	}
+
 	dovecotLabels = os.Getenv("DOVECOT_LABELS")
 	namespace = os.Getenv("DOVECOT_NAMESPACE")
 
 	dovecotPods := GetPodsByLabel(clientset, namespace, dovecotLabels)
 	initialDovecotPodCount = len(dovecotPods.Items)
 
-	StartWatcher(clientset, namespace)
+	go StartWatcherSecret(clientset, namespace)
+	StartWatcherPods(clientset, namespace)
 }
 
 func GetPodsByLabel(clientset *kubernetes.Clientset, namespace string, labels string) *v1.PodList {
@@ -73,11 +84,11 @@ func ExecuteCommand(command string, podname string, namespace string, clientset 
 	// THE FOLLOWING EXPECTS THE POD TO HAVE ONLY ONE CONTAINER IN WHICH THE COMMAND IS GOING TO BE EXECUTED
 	option := &v1.PodExecOptions{
 		Container: dovecotDirectorContainerName,
-		Command: cmd,
-		Stdin:   false,
-		Stdout:  true,
-		Stderr:  true,
-		TTY:     true,
+		Command:   cmd,
+		Stdin:     false,
+		Stdout:    true,
+		Stderr:    true,
+		TTY:       true,
 	}
 
 	req.VersionedParams(
@@ -116,37 +127,42 @@ func handleEvent(pod *v1.Pod, clientset *kubernetes.Clientset) {
 		containerStatusSlice := pod.Status.ContainerStatuses
 
 		for _, containerStatus := range containerStatusSlice {
-
 			if containerStatus.Ready {
-				podlist := GetPodsByLabel(clientset, namespace, dovecotDirectorLabels)
-
-				for _, dovecotDirectorPod := range podlist.Items {
-                    time := time.Now()
-                    logLevel := "info"
-                    logMessage := "success"
-                    formattedTime := time.Format("2006-01-02 15:04:05 MST")
-
-					err := ExecuteCommand(
-						"doveadm reload",
-						dovecotDirectorPod.ObjectMeta.Name,
-						namespace,
-						clientset)
-
-					if err != nil {
-					    logLevel = "error"
-					    logMessage = err.Error()
-					}
-
-					log := fmt.Sprintf("{ \"level\": \"%s\", \"timestamp\": \"%s\", \"pod\": \"%s\", \"command\": \"doveadm reload\", \"message\": \"%s\" }", logLevel, formattedTime, dovecotDirectorPod.ObjectMeta.Name, logMessage)
-					fmt.Println(log)
-				}
+				ExecuteDoveAdm(clientset, dovecotDirectorLabels, 0)
 			}
 		}
 	}
-
 }
 
-func StartWatcher(clientset *kubernetes.Clientset, namespace string) () {
+func ExecuteDoveAdm(clientset *kubernetes.Clientset, dovecotDirectorLabels string, sleeptime int) {
+	if sleeptime != 0 {
+		time.Sleep(time.Second * time.Duration(int64(sleeptime)))
+	}
+	podlist := GetPodsByLabel(clientset, namespace, dovecotDirectorLabels)
+
+	for _, dovecotDirectorPod := range podlist.Items {
+		curTime := time.Now()
+		logLevel := "info"
+		logMessage := "success"
+		formattedTime := curTime.Format("2006-01-02 15:04:05 MST")
+
+		err := ExecuteCommand(
+			"doveadm reload",
+			dovecotDirectorPod.ObjectMeta.Name,
+			namespace,
+			clientset)
+
+		if err != nil {
+			logLevel = "error"
+			logMessage = err.Error()
+		}
+
+		log := fmt.Sprintf("{ \"level\": \"%s\", \"timestamp\": \"%s\", \"pod\": \"%s\", \"command\": \"doveadm reload\", \"message\": \"%s\" }", logLevel, formattedTime, dovecotDirectorPod.ObjectMeta.Name, logMessage)
+		fmt.Println(log)
+	}
+}
+
+func StartWatcherPods(clientset *kubernetes.Clientset, namespace string) {
 	optionsModifierFunc := func(options *metav1.ListOptions) {
 		options.LabelSelector = dovecotLabels
 	}
@@ -178,6 +194,38 @@ func StartWatcher(clientset *kubernetes.Clientset, namespace string) () {
 	}
 }
 
+func StartWatcherSecret(clientset *kubernetes.Clientset, namespace string) {
+	watchlist := cache.NewFilteredListWatchFromClient(
+		clientset.CoreV1().RESTClient(),
+		"secrets",
+		namespace,
+		func(options *metav1.ListOptions) {})
+
+	_, controller := cache.NewInformer(
+		watchlist,
+		&v1.Secret{},
+		time.Second*0,
+		cache.ResourceEventHandlerFuncs{
+			AddFunc: func(obj interface{}) {
+				secret := obj.(*v1.Secret)
+				if secret.Type == "kubernetes.io/tls" {
+					go ExecuteDoveAdm(clientset, dovecotDirectorLabels, syncFrequencyDuration)
+				}
+			},
+			UpdateFunc: func(oldObj, newObj interface{}) {
+				secret := newObj.(*v1.Secret)
+				if secret.Type == "kubernetes.io/tls" {
+					go ExecuteDoveAdm(clientset, dovecotDirectorLabels, syncFrequencyDuration)
+				}
+			},
+		},
+	)
+
+	go controller.Run(make(chan struct{}))
+	for {
+		time.Sleep(time.Second)
+	}
+}
 
 func InClusterAuth() (*kubernetes.Clientset, error) {
 	var err error
