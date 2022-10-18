@@ -42,8 +42,10 @@ func main() {
 	}
 	dovecotDirectorLabels = os.Getenv("DOVECOT_DIRECTOR_LABELS")
 	dovecotDirectorContainerName = os.Getenv("DOVECOT_DIRECTOR_CONTAINER_NAME")
-
+	dovecotLabels = os.Getenv("DOVECOT_LABELS")
+	namespace = os.Getenv("DOVECOT_NAMESPACE")
 	syncFrequencyDurationEnv := os.Getenv("SYNC_FREQUENCY_DURATION")
+
 	syncFrequencyDuration = 70
 	if syncFrequencyDurationEnv != "" {
 		syncFrequencyDuration, err = strconv.Atoi(syncFrequencyDurationEnv)
@@ -52,14 +54,10 @@ func main() {
 		}
 	}
 
-	dovecotLabels = os.Getenv("DOVECOT_LABELS")
-	namespace = os.Getenv("DOVECOT_NAMESPACE")
-
 	dovecotPods := GetPodsByLabel(clientset, namespace, dovecotLabels)
 	initialDovecotPodCount = len(dovecotPods.Items)
 
-	go StartWatcherSecret(clientset, namespace)
-	StartWatcherPods(clientset, namespace)
+	StartWatchers(clientset, namespace)
 }
 
 func GetPodsByLabel(clientset *kubernetes.Clientset, namespace string, labels string) *v1.PodList {
@@ -162,47 +160,15 @@ func ExecuteDoveAdm(clientset *kubernetes.Clientset, dovecotDirectorLabels strin
 	}
 }
 
-func StartWatcherPods(clientset *kubernetes.Clientset, namespace string) {
-	optionsModifierFunc := func(options *metav1.ListOptions) {
-		options.LabelSelector = dovecotLabels
-	}
-	watchlist := cache.NewFilteredListWatchFromClient(
-		clientset.CoreV1().RESTClient(),
-		"pods",
-		namespace,
-		optionsModifierFunc)
-
-	_, controller := cache.NewInformer(
-		watchlist,
-		&v1.Pod{},
-		time.Second*0,
-		cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj interface{}) {
-				pod := obj.(*v1.Pod)
-				handleEvent(pod, clientset)
-			},
-			UpdateFunc: func(oldObj, newObj interface{}) {
-				pod := newObj.(*v1.Pod)
-				handleEvent(pod, clientset)
-			},
-		},
-	)
-
-	go controller.Run(make(chan struct{}))
-	for {
-		time.Sleep(time.Second)
-	}
-}
-
-func StartWatcherSecret(clientset *kubernetes.Clientset, namespace string) {
-	watchlist := cache.NewFilteredListWatchFromClient(
+func StartWatchers(clientset *kubernetes.Clientset, namespace string) {
+	watchlistSecrets := cache.NewFilteredListWatchFromClient(
 		clientset.CoreV1().RESTClient(),
 		"secrets",
 		namespace,
-		func(options *metav1.ListOptions) {})
-
-	_, controller := cache.NewInformer(
-		watchlist,
+		func(options *metav1.ListOptions) {},
+	)
+	_, controllerSecrets := cache.NewInformer(
+		watchlistSecrets,
 		&v1.Secret{},
 		time.Second*0,
 		cache.ResourceEventHandlerFuncs{
@@ -221,7 +187,30 @@ func StartWatcherSecret(clientset *kubernetes.Clientset, namespace string) {
 		},
 	)
 
-	go controller.Run(make(chan struct{}))
+	watchlistPods := cache.NewFilteredListWatchFromClient(
+		clientset.CoreV1().RESTClient(),
+		"pods",
+		namespace,
+		func(options *metav1.ListOptions) { options.LabelSelector = dovecotLabels },
+	)
+
+	_, controllerPods := cache.NewInformer(
+		watchlistPods,
+		&v1.Pod{},
+		time.Second*0,
+		cache.ResourceEventHandlerFuncs{
+			AddFunc: func(obj interface{}) {
+				handleEvent(obj.(*v1.Pod), clientset)
+			},
+			UpdateFunc: func(oldObj, newObj interface{}) {
+				handleEvent(newObj.(*v1.Pod), clientset)
+			},
+		},
+	)
+
+	go controllerPods.Run(make(chan struct{}))
+	go controllerSecrets.Run(make(chan struct{}))
+
 	for {
 		time.Sleep(time.Second)
 	}
