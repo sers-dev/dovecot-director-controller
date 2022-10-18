@@ -2,3 +2,4 @@
 go.sum
 main
 vendor
+.env
