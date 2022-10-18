@@ -20,44 +20,56 @@ import (
 	"time"
 )
 
-// variables: namespace, labels
-var dovecotLabels string
-var dovecotDirectorLabels string
-var dovecotDirectorContainerName string
-var syncFrequencyDuration int
-
-var namespace string
-var kubeconf *rest.Config
-
 var initialDovecotPodCount int
 
+type EnvVariables struct {
+	DovecotLabels                string
+	DovecotDirectorLabels        string
+	DovecotDirectorContainerName string
+	Namespace                    string
+	SyncFrequencyDuration        int
+}
+
+type K3sVars struct {
+	Kubeconf  *rest.Config
+	Clientset *kubernetes.Clientset
+}
+
 func main() {
-	clientset, err := InClusterAuth()
+	clientset, kubeconfig, err := InClusterAuth()
 
 	if clientset == nil {
-		clientset, err = OutOfClusterAuth()
+		clientset, kubeconfig, err = OutOfClusterAuth()
 	}
 	if err != nil {
 		panic(err.Error())
 	}
-	dovecotDirectorLabels = os.Getenv("DOVECOT_DIRECTOR_LABELS")
-	dovecotDirectorContainerName = os.Getenv("DOVECOT_DIRECTOR_CONTAINER_NAME")
-	dovecotLabels = os.Getenv("DOVECOT_LABELS")
-	namespace = os.Getenv("DOVECOT_NAMESPACE")
+
 	syncFrequencyDurationEnv := os.Getenv("SYNC_FREQUENCY_DURATION")
 
-	syncFrequencyDuration = 70
+	syncFrequencyDuration := 70
 	if syncFrequencyDurationEnv != "" {
 		syncFrequencyDuration, err = strconv.Atoi(syncFrequencyDurationEnv)
 		if err != nil {
 			syncFrequencyDuration = 70
 		}
 	}
+	envVariables := EnvVariables{
+		DovecotLabels:                os.Getenv("DOVECOT_LABELS"),
+		DovecotDirectorLabels:        os.Getenv("DOVECOT_DIRECTOR_LABELS"),
+		DovecotDirectorContainerName: os.Getenv("DOVECOT_DIRECTOR_CONTAINER_NAME"),
+		Namespace:                    os.Getenv("DOVECOT_NAMESPACE"),
+		SyncFrequencyDuration:        syncFrequencyDuration,
+	}
 
-	dovecotPods := GetPodsByLabel(clientset, namespace, dovecotLabels)
+	dovecotPods := GetPodsByLabel(clientset, envVariables.Namespace, envVariables.DovecotLabels)
 	initialDovecotPodCount = len(dovecotPods.Items)
 
-	StartWatchers(clientset, namespace)
+	k3sVars := K3sVars{
+		Kubeconf:  kubeconfig,
+		Clientset: clientset,
+	}
+	StartWatchers(envVariables, k3sVars)
 }
 
 func GetPodsByLabel(clientset *kubernetes.Clientset, namespace string, labels string) *v1.PodList {
@@ -72,16 +84,16 @@ func GetPodsByLabel(clientset *kubernetes.Clientset, namespace string, labels st
 	return pods
 }
 
-func ExecuteCommand(command string, podname string, namespace string, clientset *kubernetes.Clientset) error {
+func ExecuteCommand(command string, podname string, namespace string, containerName string, k3sVars K3sVars) error {
 	cmd := []string{
 		"sh",
 		"-c",
 		command,
 	}
-	req := clientset.CoreV1().RESTClient().Post().Resource("pods").Name(podname).Namespace(namespace).SubResource("exec")
+	req := k3sVars.Clientset.CoreV1().RESTClient().Post().Resource("pods").Name(podname).Namespace(namespace).SubResource("exec")
 	// THE FOLLOWING EXPECTS THE POD TO HAVE ONLY ONE CONTAINER IN WHICH THE COMMAND IS GOING TO BE EXECUTED
 	option := &v1.PodExecOptions{
-		Container: dovecotDirectorContainerName,
+		Container: containerName,
 		Command:   cmd,
 		Stdin:     false,
 		Stdout:    true,
@@ -94,7 +106,7 @@ func ExecuteCommand(command string, podname string, namespace string, clientset 
 		scheme.ParameterCodec,
 	)
 
-	exec, err := remotecommand.NewSPDYExecutor(kubeconf, "POST", req.URL())
+	exec, err := remotecommand.NewSPDYExecutor(k3sVars.Kubeconf, "POST", req.URL())
 	if err != nil {
 		return err
 	}
@@ -113,7 +125,7 @@ func ExecuteCommand(command string, podname string, namespace string, clientset 
 	return nil
 }
 
-func handleEvent(pod *v1.Pod, clientset *kubernetes.Clientset) {
+func handleEvent(pod *v1.Pod, envVars EnvVariables, k3sVars K3sVars) {
 	if initialDovecotPodCount > 1 {
 		initialDovecotPodCount--
 		return
@@ -126,17 +138,17 @@ func handleEvent(pod *v1.Pod, clientset *kubernetes.Clientset) {
 
 		for _, containerStatus := range containerStatusSlice {
 			if containerStatus.Ready {
-				ExecuteDoveAdm(clientset, dovecotDirectorLabels, 0)
+				ExecuteDoveAdm(envVars, k3sVars, "pod", 0)
 			}
 		}
 	}
 }
 
-func ExecuteDoveAdm(clientset *kubernetes.Clientset, dovecotDirectorLabels string, sleeptime int) {
-	if sleeptime != 0 {
-		time.Sleep(time.Second * time.Duration(int64(sleeptime)))
+func ExecuteDoveAdm(envVars EnvVariables, k3sVars K3sVars, trigger string, sleepTime int) {
+	if sleepTime != 0 {
+		time.Sleep(time.Second * time.Duration(int64(sleepTime)))
 	}
-	podlist := GetPodsByLabel(clientset, namespace, dovecotDirectorLabels)
+	podlist := GetPodsByLabel(k3sVars.Clientset, envVars.Namespace, envVars.DovecotDirectorLabels)
 
 	for _, dovecotDirectorPod := range podlist.Items {
 		curTime := time.Now()
@@ -147,24 +159,31 @@ func ExecuteDoveAdm(clientset *kubernetes.Clientset, dovecotDirectorLabels strin
 		err := ExecuteCommand(
 			"doveadm reload",
 			dovecotDirectorPod.ObjectMeta.Name,
-			namespace,
-			clientset)
+			envVars.Namespace,
+			envVars.DovecotDirectorContainerName,
+			k3sVars)
 
 		if err != nil {
 			logLevel = "error"
 			logMessage = err.Error()
 		}
 
-		log := fmt.Sprintf("{ \"level\": \"%s\", \"timestamp\": \"%s\", \"pod\": \"%s\", \"command\": \"doveadm reload\", \"message\": \"%s\" }", logLevel, formattedTime, dovecotDirectorPod.ObjectMeta.Name, logMessage)
+		log := fmt.Sprintf("{ \"level\": \"%s\", \"timestamp\": \"%s\", \"pod\": \"%s\", \"command\": \"doveadm reload\", \"triggered-by\": \"%s\", \"message\": \"%s\" }",
+			logLevel,
+			formattedTime,
+			dovecotDirectorPod.ObjectMeta.Name,
+			trigger,
+			logMessage,
+		)
 		fmt.Println(log)
 	}
 }
 
-func StartWatchers(clientset *kubernetes.Clientset, namespace string) {
+func StartWatchers(envVars EnvVariables, k3sVars K3sVars) {
 	watchlistSecrets := cache.NewFilteredListWatchFromClient(
-		clientset.CoreV1().RESTClient(),
+		k3sVars.Clientset.CoreV1().RESTClient(),
 		"secrets",
-		namespace,
+		envVars.Namespace,
 		func(options *metav1.ListOptions) {},
 	)
 	_, controllerSecrets := cache.NewInformer(
@@ -175,23 +194,23 @@ func StartWatchers(clientset *kubernetes.Clientset, namespace string) {
 			AddFunc: func(obj interface{}) {
 				secret := obj.(*v1.Secret)
 				if secret.Type == "kubernetes.io/tls" {
-					go ExecuteDoveAdm(clientset, dovecotDirectorLabels, syncFrequencyDuration)
+					go ExecuteDoveAdm(envVars, k3sVars, "secret", envVars.SyncFrequencyDuration)
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				secret := newObj.(*v1.Secret)
 				if secret.Type == "kubernetes.io/tls" {
-					go ExecuteDoveAdm(clientset, dovecotDirectorLabels, syncFrequencyDuration)
+					go ExecuteDoveAdm(envVars, k3sVars, "secret", envVars.SyncFrequencyDuration)
 				}
 			},
 		},
 	)
 
 	watchlistPods := cache.NewFilteredListWatchFromClient(
-		clientset.CoreV1().RESTClient(),
+		k3sVars.Clientset.CoreV1().RESTClient(),
 		"pods",
-		namespace,
-		func(options *metav1.ListOptions) { options.LabelSelector = dovecotLabels },
+		envVars.Namespace,
+		func(options *metav1.ListOptions) { options.LabelSelector = envVars.DovecotLabels },
 	)
 
 	_, controllerPods := cache.NewInformer(
@@ -200,10 +219,10 @@ func StartWatchers(clientset *kubernetes.Clientset, namespace string) {
 		time.Second*0,
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				handleEvent(obj.(*v1.Pod), clientset)
+				handleEvent(obj.(*v1.Pod), envVars, k3sVars)
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
-				handleEvent(newObj.(*v1.Pod), clientset)
+				handleEvent(newObj.(*v1.Pod), envVars, k3sVars)
 			},
 		},
 	)
@@ -216,12 +235,12 @@ func StartWatchers(clientset *kubernetes.Clientset, namespace string) {
 	}
 }
 
-func InClusterAuth() (*kubernetes.Clientset, error) {
+func InClusterAuth() (*kubernetes.Clientset, *rest.Config, error) {
 	var err error
-	kubeconf, err = rest.InClusterConfig()
+	kubeconf, err := rest.InClusterConfig()
 
 	if err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	clientset, err := kubernetes.NewForConfig(kubeconf)
@@ -229,20 +248,20 @@ func InClusterAuth() (*kubernetes.Clientset, error) {
 		panic(err.Error())
 	}
 
-	return clientset, nil
+	return clientset, kubeconf, nil
 }
 
-func OutOfClusterAuth() (*kubernetes.Clientset, error) {
-	var kubeconfig *string
+func OutOfClusterAuth() (*kubernetes.Clientset, *rest.Config, error) {
+	var configPath *string
 	if home := homedir.HomeDir(); home != "" {
-		kubeconfig = flag.String("c", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
+		configPath = flag.String("c", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the configPath file")
 	} else {
-		kubeconfig = flag.String("c", "", "absolute path to the kubeconfig file")
+		configPath = flag.String("c", "", "absolute path to the configPath file")
 	}
 	flag.Parse()
 
 	var err error
-	kubeconf, err = clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	kubeconf, err := clientcmd.BuildConfigFromFlags("", *configPath)
 	if err != nil {
 		panic(err.Error())
 	}
@@ -252,5 +271,5 @@ func OutOfClusterAuth() (*kubernetes.Clientset, error) {
 		panic(err.Error())
 	}
 
-	return clientset, nil
+	return clientset, kubeconf, nil
 }
