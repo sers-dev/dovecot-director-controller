@@ -31,5 +31,25 @@ Environment variables needed for successful execution:
     by default set to 60s, so if you change the value of kubelets parameter you should use the same value plus a few seconds
     to trigger at `doveadm reload` after adding/changing tls secrets successfully
 
+When running inside a kubernetes cluster the pod needs the following permissions via Role for the same namespace your 
+dovecot pods run in:
+```
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - secrets
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/exec
+  verbs:
+  - create
+```
+
 ### Used Library
 https://github.com/kubernetes/client-go
