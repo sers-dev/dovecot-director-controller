@@ -1,3 +1,11 @@
+# Archived
+
+Dovecot removed the director in 2.4
+It's unfortunate because the only alternative is active/passive which is not really suitable for kubernetes.
+Version 3 plans to introduce proper clustering, but at this point in time the feature is only planned for the paid version of dovecot.
+
+Therefore this repository has become obsolete. There's no intention to continue here or alter anything to make it possible. We switched away from dovecot.
+
 # Dovecot Director Controller
 
 Dovecot director is used to keep a temporary user -> mail server (= dovecot server) mapping, as described in
